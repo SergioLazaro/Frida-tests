@@ -1,4 +1,5 @@
 #!/usr/bin/python
+import os
 from sys import argv
 
 import re
@@ -40,7 +41,7 @@ def convert_descriptor(name):
 	return name.replace("/",".").replace(";","")
 
 def method_parser(method):
-	class_name = re.search("(.*);->", method).group(1)
+	class_name = convert_descriptor(re.search("(.*);->", method).group(1))
 	method_tmp = re.search("<(.*)>", method)
 	andro_method = None
 	if method_tmp is None:
@@ -51,22 +52,13 @@ def method_parser(method):
 
 	return andro_method
 
-
-def main(apkpath):
-
-	app = AndroApp(apkpath)
-
-	package_name = app.a.get_package()
-	print package_name
-	activities = app.a.get_activities()
-
+def getAndroClasses(app, package_name):
 	andro_classes = list()
-
 	for cl in app.d.get_classes():
 		modified_class_name = convert_descriptor(cl.get_name())
 		if package_name in modified_class_name and "R$" not in modified_class_name and \
-				modified_class_name != package_name + ".BuildConfig" and \
-				modified_class_name != package_name + ".R":
+						modified_class_name != package_name + ".BuildConfig" and \
+						modified_class_name != package_name + ".R":
 
 			andro_methods = list()
 			for method in cl.get_methods():
@@ -75,26 +67,75 @@ def main(apkpath):
 					andro_methods.append(m)
 			andro_classes.append(AndroClass(modified_class_name, andro_methods))
 
-	for ac in andro_classes:
-		print ac.print_info()
+	for an in andro_classes:
+		an.print_info()
+	return andro_classes
+
+def writeFridaHeader(file, class_name):
+	file.write("Java.perform(function() {\n")
+	file.write("\t// Class to hook\n")
+	file.write("\tvar ThisActivity = Java.use('" + class_name + "');\n")
+
+def writeFridaHook(file,method):
+	if method is not None:
+		file.write("\tThisActivity." + method.methodname + ".implementation = function() {\n")
+		file.write("\t\tsend('hook - " + method.methodname + "')\n")
+		file.write("\t\tthis.")
+		file.write("\t};\n")
+
+def writeFridaPython(package_name, classname, python_path):
+	py = open(python_path,"w")
+	#Write header
+	py.write('import frida, sys\n')
+	py.write('package_name = "' + package_name + '"\n')
+	#Write function get_messages_from_js
+	py.write('def get_messages_from_js(message, data):\n')
+	py.write('\tprint(message)\n')
+	py.write("\tprint(message['payload'])\n")
+	#Write function instrument_load_url
+	py.write("def instrument_load_url():\n")
+	py.write("\twith open('" + classname + "', 'r') as myfile:\n")
+	py.write("\t\thook_code = myfile.read()\n")
+	py.write("\treturn hook_code\n")
+	#Write bottom
+	py.write("process = frida.get_usb_device().attach(package_name)\n")
+	py.write("script = process.create_script(instrument_load_url())\n")
+	py.write("script.on('message',get_messages_from_js)\n")
+	py.write("script.load()\n")
+	py.write("sys.stdin.read()\n")
+
+def writeFridaHooks(andro_classes, outputdir, package_name):
+	createNewDir(outputdir + package_name) #Create directory for this apk
+
+	for cl in andro_classes:
+		filepath = outputdir + package_name + "/" + cl.classname
+		hook_code = filepath + ".js"
+		f = open(hook_code,"a")
+		writeFridaHeader(f, str(cl.classname))
+		for method in cl.methods:
+			writeFridaHook(f, method)
+
+		f.write("});")	#Close file structure
+		f.close()
+		writeFridaPython(package_name, cl.classname + ".js", filepath + ".py")
 
 
+def createNewDir(dirpath):
+	if not os.path.exists(dirpath):
+		print "[*] Creating new directory in %s ..." % (dirpath)
+		os.makedirs(dirpath)
 
+def main(apkpath):
+	outputdir = "hook_code/"
+	createNewDir(outputdir)
 
+	app = AndroApp(apkpath)
+	package_name = app.a.get_package()
+	#activities = app.a.get_activities()
 
-
-	'''
-	methods = app.d.get_methods()
-	print "PACKAGE NAME: ", package_name 
-	print "ACTIVITIES:"
-	for activity in activities:
-		if package_name in activity:		#Check for ensure app activities
-			print "[*] ", activity
-
-	print "Methods:"
-	#for method in methods:
-	#	print method.get_tags()
-	'''
+	andro_classes = getAndroClasses(app,package_name)
+	#andro_classes has AndroClasses info
+	writeFridaHooks(andro_classes,outputdir, package_name)
 
 def print_help(parser):
     print "arguments error!!\n"
